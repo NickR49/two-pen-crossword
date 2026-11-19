@@ -156,7 +156,7 @@ dialog textarea{min-height:120px;font-size:14px;resize:vertical}
 <body>
 <header>
   <h1>Two-Pen Crossword <small id="pztitle"></small></h1>
-  <span class="status wait" id="status"><b></b><span>Starting</span></span>
+  <span class="status wait" id="status"><b></b><span>Connecting</span></span>
   <div class="invite">
     <label for="link">Invite link</label>
     <input id="link" type="text" readonly>
@@ -458,12 +458,11 @@ function paintSel(){
       var ol=li.parentNode; if(li.offsetTop-ol.offsetTop<ol.scrollTop||li.offsetTop-ol.offsetTop+li.offsetHeight>ol.scrollTop+ol.clientHeight) ol.scrollTop=li.offsetTop-ol.offsetTop-ol.clientHeight/3; } });
   var p=$('curclue'); p.textContent='';
   if(wi>=0){ var w=M.words[wi]; p.appendChild(el('b',null,w.n+(w.d==='A'?' Across':' Down'))); p.appendChild(document.createTextNode(w.clue)); }
-  sendCursor();
 }
 function select(i,d,focus){
   if(S.pz.sol[i]===undefined||S.pz.sol[i]==='#') return;
   if(wordAt(i,d)<0) d=d==='A'?'D':'A';
-  sel={i:i,d:d}; paintSel();
+  sel={i:i,d:d}; paintSel(); sendCursor();
   if(focus!==false) kb.focus({preventScroll:true});
 }
 function step(dir){ // move within the current word
@@ -566,36 +565,40 @@ function drawWho(){
   peers.forEach(function(p){ var c=el('span','chip'); c.style.color='var(--ink'+p.color+')'; c.appendChild(el('i')); c.appendChild(document.createTextNode(p.name)); box.appendChild(c); });
 }
 function seePeer(m){
-  if(!m||typeof m.id!=='string'||m.id===me.id) return null;
-  var p=peers.get(m.id), fresh=!p; if(!p){ p={}; peers.set(m.id,p); }
-  var nm=String(m.name||'Guest').slice(0,20), col=(+m.color||0)%6, changed=fresh||p.name!==nm||p.color!==col;
-  p.name=nm; p.color=col; if('i' in m){ p.i=m.i; p.d=m.d==='D'?'D':'A'; }
-  if(changed) drawWho();
-  return fresh?p:null;
+  if(typeof m.sid!=='string'||m.sid===SID) return;
+  var p=peers.get(m.sid), fresh=false;
+  if(!p){ if(typeof m.name!=='string') return; p={}; peers.set(m.sid,p); fresh=true; }
+  p.seen=Date.now();
+  if(typeof m.name==='string'){ var nm=m.name.slice(0,20)||'Guest', col=(+m.color||0)%6;
+    if(fresh||p.name!==nm||p.color!==col){ p.name=nm; p.color=col; drawWho(); } }
+  if(typeof m.i==='number'){ p.i=m.i; p.d=m.d==='D'?'D':'A'; }
+  if(fresh){ greet(); afterChange(); }   // let a newcomer see us and the board straight away
 }
-function dropPeer(id){ var p=peers.get(id); if(!p) return; peers.delete(id); drawWho(); paintSel(); }
+function dropPeer(k){ if(!peers.has(k)) return; peers.delete(k); drawWho(); paintSel(); liveStatus(); }
 var curT=0;
-function sendCursor(){ clearTimeout(curT); curT=setTimeout(function(){ send({t:'cur', id:me.id, name:me.name, color:me.color, i:sel.i, d:sel.d}); },40); }
+function sendCursor(){ clearTimeout(curT); curT=setTimeout(function(){ send(myCur()); },40); }
+function openDlg(d){ try{ d.showModal(); return; }catch(e){} d.setAttribute('open',''); }
+function closeDlg(d){ try{ d.close(); }catch(e){} d.removeAttribute('open'); }
 
 function askName(){
   var d=$('dname'), pick=me.color, box=$('inks'); $('nm').value=me.name; box.textContent='';
   for(var k=0;k<6;k++)(function(k){ var b=el('button'); b.type='button'; b.style.color='var(--ink'+k+')'; b.setAttribute('aria-label','Ink '+(k+1));
     b.classList.toggle('on',k===pick); b.onclick=function(){ pick=k; box.querySelectorAll('button').forEach(function(x,n){ x.classList.toggle('on',n===k); }); }; box.appendChild(b); })(k);
   $('fname').onsubmit=function(e){ e.preventDefault(); var n=$('nm').value.trim(); if(!n) return;
-    me.name=n.slice(0,20); me.color=pick; store.set('twopen:me',me); d.close(); drawWho(); sendCursor(); kb.focus({preventScroll:true}); };
-  d.showModal();
+    me.name=n.slice(0,20); me.color=pick; store.set('twopen:me',me); closeDlg(d); drawWho(); sendCursor(); kb.focus({preventScroll:true}); };
+  openDlg(d);
 }
 d_cancel($('dname'));
 function d_cancel(d){ d.addEventListener('cancel',function(e){ if(!me.name) e.preventDefault(); }); }
 
 /* ---------- puzzle picker / import ---------- */
-function usePuzzle(pz){ $('dpz').close(); setPuzzle(pz); }
+function usePuzzle(pz){ closeDlg($('dpz')); setPuzzle(pz); }
 $('pick').onclick=function(){
   var list=$('pzlist'); list.textContent=''; $('pzerr').textContent='';
   PUZZLES.forEach(function(p){ var b=el('button'); b.type='button'; b.appendChild(el('b',null,p.title)); b.appendChild(el('span',null,p.by+' · '+p.w+'×'+p.h)); b.onclick=function(){ usePuzzle(p); }; list.appendChild(b); });
-  $('dpz').showModal();
+  openDlg($('dpz'));
 };
-$('pzclose').onclick=function(){ $('dpz').close(); };
+$('pzclose').onclick=function(){ closeDlg($('dpz')); };
 $('build').onclick=function(){
   var seen={}, entries=[];
   $('own').value.split('\n').forEach(function(line){ var m=line.match(/^\s*([A-Za-z][A-Za-z ']*?)\s*[-:–—|\t]\s*(.+)$/); if(!m) return;
@@ -631,76 +634,117 @@ function parseIpuz(text,name){
   return {id:'ipuz-'+rid(5), title:j.title||name, by:j.author||'', w:w, h:h, sol:sol, num:num};
 }
 
-/* ---------- network (PeerJS: first one in hosts, everyone else connects to them) ---------- */
-var HOST_ID='twopen-xw-'+room, net={peer:null, role:'', gen:0, conns:new Map(), host:null, timer:0};
-function status(cls,text){ var s=$('status'); s.className='status '+cls; s.lastChild.textContent=text; }
-function peerOpts(){
-  var o={debug:+(new URLSearchParams(location.search).get("debug")||0)}, sv=new URLSearchParams(location.search).get('server');
-  if(sv){ try{ var u=new URL(sv); o.host=u.hostname; o.secure=u.protocol==='https:'; o.port=+u.port||(o.secure?443:80); o.path=u.pathname||'/'; }catch(e){} }
-  return o;
-}
-function send(msg, except){
+/* ---------- network ----------
+   Every message goes out two ways at once; receiving one twice is harmless (cells are
+   last-writer-wins, chat is keyed by id, cursors are absolute).
+   1. Direct: PeerJS, browser to browser. The first tab in the room registers the room id.
+   2. Relay: MQTT over secure WebSocket via public brokers. Works behind any router.
+   Test options: ?server=<PeerServer url>  ?relay=<wss url>|off  ?direct=off  ?debug=2 */
+var SID=rid(10), Q=new URLSearchParams(location.search), started=Date.now();
+var HOST_ID='twopen-xw-'+room, net={peer:null, role:'', gen:0, conns:new Map(), host:null, timer:0, sig:false};
+var relays=[], TOPIC='twopen/v1/'+room;
+function wrap(m){ m.sid=SID; m.from=me.id; return m; }
+function send(msg){ wrap(msg); peerSend(msg); relaySend(msg); }
+function peerSend(msg,except){
   if(net.role==='host') net.conns.forEach(function(c){ if(c!==except&&c.open) try{ c.send(msg); }catch(e){} });
   else if(net.host&&net.host.open) try{ net.host.send(msg); }catch(e){}
 }
-function hello(c){ try{ c.send({t:'hello', id:me.id, name:me.name, color:me.color, i:sel.i, d:sel.d}); c.send({t:'state', s:snapshot()}); }catch(e){} }
+function relaySend(msg){ var s; try{ s=JSON.stringify(msg); }catch(e){ return; }
+  relays.forEach(function(r){ if(r.up) try{ r.cl.publish(TOPIC,s); }catch(e){} }); }
+function myCur(){ return {t:'cur', name:me.name, color:me.color, i:sel.i, d:sel.d}; }
+var greetT=0;
+function greet(){ clearTimeout(greetT); greetT=setTimeout(function(){ send(myCur()); send({t:'state', s:snapshot()}); },250); }
 function handle(msg,c){
-  if(!msg||typeof msg!=='object') return;
-  c.seen=Date.now();
+  if(!msg||typeof msg!=='object'||msg.sid===SID) return;
+  if(c){ c.seen=Date.now(); if(net.role==='host') peerSend(msg,c); }   // host passes guests' messages on
+  seePeer(msg);
   switch(msg.t){
-    case 'hello': c.xid=msg.id; if(seePeer(msg)) paintSel(); paintSel(); break;
+    case 'cur': paintSel(); break;
     case 'state': mergeState(msg.s); break;
     case 'cell': if(Array.isArray(msg.pv)&&pvCmp(msg.pv,S.pv)===0) applyCell(msg.i,msg.v); break;
-    case 'cur': seePeer(msg); paintSel(); break;
     case 'chat': addChat(msg.m); break;
-    case 'left': dropPeer(msg.id); break;
+    case 'bye': dropPeer(msg.sid); break;
   }
-  if(net.role==='host'&&msg.t!=='ping'&&msg.t!=='hello') send(msg,c);
-  if(net.role==='host'&&msg.t==='hello') send({t:'cur', id:msg.id, name:msg.name, color:msg.color, i:msg.i, d:msg.d}, c);
+  liveStatus();
 }
-function teardown(){ net.gen++; clearTimeout(net.timer); net.conns.clear(); net.host=null; if(net.peer){ try{ net.peer.destroy(); }catch(e){} net.peer=null; }
-  if(peers.size){ peers.clear(); drawWho(); paintSel(); } }
-function later(fn,ms){ clearTimeout(net.timer); net.timer=setTimeout(fn,ms); }
-function liveStatus(){ if(net.role==='host') status(net.conns.size?'live':'wait', net.conns.size?'Connected':'Waiting for the other pen'); }
+function status(cls,text,tip){ var s=$('status'); s.className='status '+cls; s.lastChild.textContent=text; s.title=tip||''; }
+function liveStatus(){
+  var now=Date.now(), n=0; peers.forEach(function(p){ if(now-p.seen<16000) n++; });
+  var direct=net.role==='host'?net.conns.size>0:!!(net.host&&net.host.open);
+  var relay=relays.some(function(r){ return r.up; });
+  var tip='Direct link: '+(direct?'open':net.sig?'not open':'unavailable')+'. Relay: '+(relay?'connected':'unavailable')+'.';
+  if(n) status('live','Connected'+(direct?'':' via relay'),tip);
+  else if(relay||net.sig) status('wait','Waiting for the other pen',tip);
+  else if(now-started<15000) status('wait','Connecting',tip);
+  else status('off','Can’t reach the game servers. Check your internet connection.',tip);
+}
 
+/* direct: PeerJS */
+function peerOpts(){
+  var o={debug:+(Q.get('debug')||0)}, sv=Q.get('server');
+  if(sv){ try{ var u=new URL(sv); o.host=u.hostname; o.secure=u.protocol==='https:'; o.port=+u.port||(o.secure?443:80); o.path=u.pathname||'/'; }catch(e){} }
+  return o;
+}
+function hello(c){ try{ c.send(wrap(myCur())); c.send(wrap({t:'state', s:snapshot()})); }catch(e){} }
+function teardown(){ net.gen++; clearTimeout(net.timer); net.conns.clear(); net.host=null; net.sig=false;
+  if(net.peer){ try{ net.peer.destroy(); }catch(e){} net.peer=null; } }
+function later(fn,ms){ clearTimeout(net.timer); net.timer=setTimeout(fn,ms); }
 function asGuest(){
-  teardown(); var g=net.gen; net.role='guest'; status('wait','Connecting');
+  teardown(); var g=net.gen; net.role='guest';
   var p=net.peer=new Peer(undefined,peerOpts());
-  p.on('open',function(){ if(g!==net.gen) return;
+  p.on('open',function(){ if(g!==net.gen) return; net.sig=true; liveStatus();
     var c=p.connect(HOST_ID,{reliable:true}); c.seen=Date.now();
-    later(function(){ if(g===net.gen&&!c.open) asGuest(); },12000);
-    c.on('open',function(){ if(g!==net.gen) return; clearTimeout(net.timer); net.host=c; status('live','Connected'); hello(c); });
+    later(function(){ if(g===net.gen&&!c.open) asGuest(); },15000);
+    c.on('open',function(){ if(g!==net.gen) return; clearTimeout(net.timer); net.host=c; c.seen=Date.now(); hello(c); liveStatus(); });
     c.on('data',function(m){ if(g===net.gen) handle(m,c); });
-    c.on('close',function(){ if(g===net.gen){ status('wait','Reconnecting'); later(asGuest,800); } });
+    c.on('close',function(){ if(g===net.gen){ net.host=null; liveStatus(); later(asGuest,800); } });
     c.on('error',function(){ if(g===net.gen) later(asGuest,1500); });
   });
   p.on('error',function(e){ if(g!==net.gen) return;
-    if(e.type==='peer-unavailable') asHost(); else { status('off','Offline, retrying'); later(asGuest,4000); } });
+    if(e.type==='peer-unavailable') asHost(); else { net.sig=false; liveStatus(); later(asGuest,5000); } });
 }
 function asHost(){
-  teardown(); var g=net.gen; net.role='host'; status('wait','Opening the room');
+  teardown(); var g=net.gen; net.role='host';
   var p=net.peer=new Peer(HOST_ID,peerOpts());
-  p.on('open',function(){ if(g===net.gen) liveStatus(); });
+  p.on('open',function(){ if(g===net.gen){ net.sig=true; liveStatus(); } });
   p.on('connection',function(c){ if(g!==net.gen) return; c.seen=Date.now();
-    c.on('open',function(){ if(g!==net.gen) return; net.conns.set(c.peer,c); liveStatus(); hello(c);
-      peers.forEach(function(q,id){ if(id!==c.xid) try{ c.send({t:'cur', id:id, name:q.name, color:q.color, i:q.i, d:q.d}); }catch(e){} }); });
+    c.on('open',function(){ if(g!==net.gen) return; net.conns.set(c.peer,c); c.seen=Date.now(); hello(c); liveStatus(); });
     c.on('data',function(m){ if(g===net.gen) handle(m,c); });
-    var gone=function(){ if(g!==net.gen||!net.conns.has(c.peer)) return; net.conns.delete(c.peer); if(c.xid){ dropPeer(c.xid); send({t:'left', id:c.xid}); } liveStatus(); };
+    var gone=function(){ if(g===net.gen&&net.conns.get(c.peer)===c){ net.conns.delete(c.peer); liveStatus(); } };
     c.on('close',gone); c.on('error',gone);
   });
-  p.on('disconnected',function(){ setTimeout(function(){ if(g===net.gen&&p.disconnected&&!p.destroyed) try{ p.reconnect(); }catch(e){} },2000); });
+  p.on('disconnected',function(){ if(g!==net.gen) return; net.sig=false; liveStatus();
+    setTimeout(function(){ if(g===net.gen&&p.disconnected&&!p.destroyed) try{ p.reconnect(); }catch(e){} },2000); });
   p.on('error',function(e){ if(g!==net.gen) return;
     if(e.type==='unavailable-id') later(asGuest,1200);
-    else if(e.type!=='peer-unavailable'&&e.type!=='webrtc'){ status('off','Offline, retrying'); later(asGuest,4000); } });
+    else if(e.type!=='peer-unavailable'&&e.type!=='webrtc'){ net.sig=false; liveStatus(); later(asGuest,5000); } });
 }
-setInterval(function(){ // heartbeat: notice a partner who vanished without closing the connection
+
+/* relay: MQTT over WebSocket */
+function startRelay(){
+  var q=Q.get('relay'), list=q==='off'?[]:q?[q]:['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+  list.forEach(function(url,k){
+    var r={up:false, cl:null};
+    try{ r.cl=mqtt.connect(url,{clientId:'twopen_'+SID+'_'+k, clean:true, keepalive:30, reconnectPeriod:4000, connectTimeout:10000,
+      will:{topic:TOPIC, payload:JSON.stringify({t:'bye', sid:SID, from:me.id}), qos:0, retain:false}}); }catch(e){ return; }
+    relays.push(r);
+    r.cl.on('connect',function(){ r.cl.subscribe(TOPIC,function(err){ if(err) return; r.up=true; greet(); liveStatus(); }); });
+    r.cl.on('close',function(){ if(r.up){ r.up=false; liveStatus(); } });
+    r.cl.on('error',function(){});
+    r.cl.on('message',function(t,payload){ var m; try{ m=JSON.parse(payload.toString()); }catch(e){ return; } handle(m,null); });
+  });
+}
+
+setInterval(function(){ // heartbeat; also notices a partner who vanished without saying goodbye
   var now=Date.now();
-  if(net.role==='host') net.conns.forEach(function(c){ if(now-c.seen>15000){ try{ c.close(); }catch(e){} net.conns.delete(c.peer); if(c.xid){ dropPeer(c.xid); send({t:'left', id:c.xid}); } liveStatus(); } });
-  else if(net.host&&now-net.host.seen>15000){ status('wait','Reconnecting'); asGuest(); return; }
-  send({t:'ping'});
-},5000);
-function loadPeer(urls,done){ if(window.Peer) return done(true); if(!urls.length) return done(false);
-  var s=document.createElement('script'); s.src=urls[0]; s.onload=function(){ done(!!window.Peer); }; s.onerror=function(){ loadPeer(urls.slice(1),done); }; document.head.appendChild(s); }
+  if(net.role==='host') net.conns.forEach(function(c,k){ if(now-c.seen>15000){ try{ c.close(); }catch(e){} net.conns.delete(k); } });
+  else if(net.host&&now-net.host.seen>15000) asGuest();
+  peers.forEach(function(p,k){ if(now-p.seen>16000) dropPeer(k); });
+  send(myCur()); liveStatus();
+},4000);
+window.addEventListener('pagehide',function(){ send({t:'bye'}); });
+function loadScript(urls,test,done){ if(test()) return done(true); if(!urls.length) return done(false);
+  var s=document.createElement('script'); s.src=urls[0]; s.onload=function(){ done(test()); }; s.onerror=function(){ loadScript(urls.slice(1),test,done); }; document.head.appendChild(s); }
 
 /* ---------- start ---------- */
 $('link').value=location.href;
@@ -710,10 +754,11 @@ $('copy').onclick=function(){ var b=this, ok=function(){ b.textContent='Copied';
 window.addEventListener('hashchange',function(){ location.reload(); });
 loadPuzzle(); drawChat(); drawWho();
 if(!me.name) askName();
-loadPeer(['https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js','https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js'],function(ok){
-  if(ok&&window.RTCPeerConnection) asGuest();
-  else status('off','Solo only here: live play needs this page opened from a normal web address');
-});
+setTimeout(liveStatus,15500);
+if(Q.get('direct')!=='off') loadScript(['https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js','https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js'],
+  function(){ return !!window.Peer; }, function(ok){ if(ok&&window.RTCPeerConnection) try{ asGuest(); }catch(e){} liveStatus(); });
+loadScript(['https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js','https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js'],
+  function(){ return !!(window.mqtt&&window.mqtt.connect); }, function(ok){ if(ok) startRelay(); liveStatus(); });
 })();
 </script>
 </body>
